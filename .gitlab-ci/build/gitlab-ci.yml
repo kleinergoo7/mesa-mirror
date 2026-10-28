@@ -667,6 +667,19 @@ windows-msvc:
       - _build/meson-logs/*.txt
       - _install/
 
+windows-msvc-radv:
+  extends:
+    - .build-windows
+    - .use-windows_build_msvc
+    - .windows-build-rules
+  stage: build-for-tests
+  script:
+    - pwsh -ExecutionPolicy RemoteSigned .\.gitlab-ci\windows\mesa_build_radv.ps1
+  artifacts:
+    paths:
+      - _build/meson-logs/*.txt
+      - _install/
+
 debian-vulkan:
   extends:
     - .meson-build-only

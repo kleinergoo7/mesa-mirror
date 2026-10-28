@@ -1,0 +1,106 @@
+name: windows-radv
+on:
+  push:
+    branches: [mesa-26.2.6]
+  pull_request:
+    branches: [mesa-26.2.6]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-radv:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install dependencies
+        run: |
+          choco install -y ninja cmake winflexbison pkgconfiglite
+          python -m pip install --upgrade pip --progress-bar off
+          pip install packaging meson mako "numpy < 2.0" pyyaml --progress-bar off
+
+      - name: Install Vulkan SDK (official, provides glslangValidator)
+        run: |
+          .\.gitlab-ci\windows\mesa_deps_vulkan_sdk.ps1
+          $sdkBin = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION\Bin"
+          echo $sdkBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & "$sdkBin\glslangValidator.exe" --version
+
+      - name: Install zlib via vcpkg
+        run: vcpkg install zlib:x64-windows
+
+      - name: Build DirectX-Headers from source (official v1.619.1)
+        run: |
+          git clone -b v1.619.1 --depth=1 https://github.com/microsoft/DirectX-Headers dxheaders
+          cmake dxheaders -B dxheaders/build -GNinja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_CXX_FLAGS="/utf-8" `
+            -DCMAKE_INSTALL_PREFIX="$PWD/dxheaders-install"
+          ninja -C dxheaders/build install
+
+      - name: Configure (RADV-only, official flags)
+        run: |
+          $env:CMAKE_PREFIX_PATH = "C:/vcpkg/installed/x64-windows;$PWD/dxheaders-install"
+          $env:PKG_CONFIG_PATH = "C:/vcpkg/installed/x64-windows/lib/pkgconfig;$PWD/dxheaders-install/lib/pkgconfig"
+          $env:LIB = "$env:LIB;$PWD/dxheaders-install/lib"
+          Add-Content -Path $env:GITHUB_ENV -Value "LIB=$env:LIB"
+          meson setup _build `
+            --default-library=shared `
+            --buildtype=release `
+            --wrap-mode=nodownload `
+            -Db_ndebug=false `
+            -Db_vscrt=mt `
+            -Dc_args=/wd4319 `
+            --prefix="$PWD/_install" `
+            -Dllvm=disabled `
+            -Damd-use-llvm=false `
+            -Dvulkan-drivers=amd `
+            -Dgallium-drivers="" `
+            -Dplatforms=windows `
+            -Dopengl=false `
+            -Dgles1=disabled `
+            -Dgles2=disabled `
+            -Dglx=disabled `
+            -Degl=disabled `
+            -Dgbm=disabled `
+            -Dglvnd=disabled `
+            -Dgallium-va=disabled `
+            -Dgallium-d3d10umd=false `
+            -Dgallium-mediafoundation=disabled `
+            -Dgallium-rusticl=false `
+            -Dmicrosoft-clc=disabled `
+            -Dspirv-to-dxil=false `
+            -Dbuild-tests=true `
+            -Dwerror=true `
+            -Dwarning_level=2 `
+            $env:EXTRA_MESON_ARGS
+
+      - name: Build
+        run: meson compile -C _build
+
+      - name: Test
+        run: meson test -C _build --num-processes 2 --print-errorlogs
+
+      - name: Install
+        run: meson install -C _build
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-radv-result
+          path: |
+            _build/meson-logs/
+            _install/
+          retention-days: 5
